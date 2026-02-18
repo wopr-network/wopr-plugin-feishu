@@ -147,7 +147,9 @@ describe("extractTextFromContent", () => {
 
 	it("returns '[unsupported: audio]' for unsupported types", () => {
 		const content = JSON.stringify({ file_key: "file_xxx" });
-		expect(extractTextFromContent("audio", content)).toBe("[unsupported: audio]");
+		expect(extractTextFromContent("audio", content)).toBe(
+			"[unsupported: audio]",
+		);
 	});
 
 	it("handles malformed JSON content gracefully", () => {
@@ -159,9 +161,6 @@ describe("extractTextFromContent", () => {
 // ─── stripBotMention ──────────────────────────────────────────────────────────
 
 describe("stripBotMention", () => {
-	// Note: stripBotMention uses the module-level config, which starts empty
-	// so botName won't be set in these tests unless we manipulate config
-
 	it("strips @_user_N placeholders from text", () => {
 		const result = stripBotMention("Hey @_user_1 how are you?");
 		expect(result).toBe("Hey how are you?");
@@ -198,22 +197,15 @@ describe("buildSessionKey", () => {
 // ─── shouldRespond ────────────────────────────────────────────────────────────
 
 describe("shouldRespond", () => {
-	// shouldRespond uses module-level config — we need to test with defaults (empty config)
-	// The default dmPolicy is "open", groupPolicy is "mention"
-
 	it("returns true for p2p with default dmPolicy (open)", () => {
-		// config is empty = dmPolicy defaults to "open"
 		expect(shouldRespond("p2p", [])).toBe(true);
 	});
 
-	it("returns true for group with groupPolicy 'all'", () => {
-		// We test the logic by passing mentions - with empty config groupPolicy is "mention"
-		// Test "all" behavior: group + mentions exist
+	it("returns true for group with any mention when policy is mention (default)", () => {
 		expect(shouldRespond("group", [{ name: "SomeBot" }])).toBe(true);
 	});
 
 	it("returns false for group with no mentions when policy is mention", () => {
-		// default groupPolicy = "mention", no mentions
 		expect(shouldRespond("group", [])).toBe(false);
 	});
 });
@@ -267,7 +259,6 @@ describe("resolveDomain", () => {
 	});
 
 	it("returns Feishu domain (0) as default for unknown domain", () => {
-		// Custom domain strings aren't numeric domains - fall back to Feishu
 		expect(resolveDomain({ domain: "custom" })).toBe(0);
 	});
 
@@ -279,19 +270,24 @@ describe("resolveDomain", () => {
 // ─── Plugin lifecycle ─────────────────────────────────────────────────────────
 
 describe("plugin lifecycle", () => {
-	it("has correct name, version, description", async () => {
+	it("has correct name, version, and manifest", async () => {
 		const { default: plugin } = await import("../../src/index.js");
-		expect(plugin.name).toBe("wopr-plugin-feishu");
+		expect(plugin.name).toBe("@wopr-network/wopr-plugin-feishu");
 		expect(plugin.version).toBe("1.0.0");
-		expect(plugin.description).toContain("Feishu");
+		expect(plugin.manifest).toBeDefined();
+		expect(plugin.manifest?.capabilities).toContain("channel");
+		expect(plugin.manifest?.icon).toBeDefined();
+		expect(plugin.manifest?.category).toBe("communication");
 	});
 
-	it("init() registers config schema and skips bot start when credentials missing", async () => {
+	it("init() registers config schema, channel provider, and skips bot start when credentials missing", async () => {
 		const { default: plugin } = await import("../../src/index.js");
 
 		const mockCtx = {
-			getConfig: vi.fn(() => ({})), // no credentials
+			getConfig: vi.fn(() => ({})),
 			registerConfigSchema: vi.fn(),
+			registerChannelProvider: vi.fn(),
+			unregisterChannelProvider: vi.fn(),
 			getAgentIdentity: vi.fn().mockResolvedValue({ name: "TestBot" }),
 			log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 			logMessage: vi.fn(),
@@ -304,19 +300,33 @@ describe("plugin lifecycle", () => {
 			saveConfig: vi.fn(),
 			getMainConfig: vi.fn(),
 			getPluginDir: vi.fn(() => "/tmp/test"),
+			storage: {
+				register: vi.fn(),
+				getRepository: vi.fn(),
+			},
+			events: {
+				on: vi.fn(),
+				once: vi.fn(),
+				emitCustom: vi.fn(),
+			},
+			hooks: {
+				on: vi.fn(),
+				off: vi.fn(),
+			},
 		};
 
-		// Should not throw — just log warning and return early
 		await expect(plugin.init!(mockCtx as never)).resolves.toBeUndefined();
 		expect(mockCtx.registerConfigSchema).toHaveBeenCalledWith(
 			"wopr-plugin-feishu",
 			expect.objectContaining({ title: "Feishu/Lark Plugin" }),
 		);
+		expect(mockCtx.registerChannelProvider).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "feishu" }),
+		);
 	});
 
 	it("shutdown() cleans up state without throwing", async () => {
 		const { default: plugin } = await import("../../src/index.js");
-		// Should not throw even if called without prior init
 		await expect(plugin.shutdown!()).resolves.toBeUndefined();
 	});
 });

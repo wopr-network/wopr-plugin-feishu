@@ -1,17 +1,19 @@
 import http from "node:http";
 import path from "node:path";
 import * as lark from "@larksuiteoapi/node-sdk";
-import winston from "winston";
 import type {
-	AgentIdentity,
-	ChannelInfo,
+	ChannelCommand,
+	ChannelMessageParser,
+	ChannelProvider,
 	ConfigSchema,
-	FeishuConfig,
 	WOPRPlugin,
 	WOPRPluginContext,
-} from "./types.js";
+} from "@wopr-network/plugin-types";
+import winston from "winston";
+import type { AgentIdentity, ChannelInfo, FeishuConfig } from "./types.js";
 
-// Module-level state
+// ─── Module-level state ───────────────────────────────────────────────────────
+
 let ctx: WOPRPluginContext | null = null;
 let config: FeishuConfig = {};
 let agentIdentity: AgentIdentity = { name: "WOPR", emoji: "👀" };
@@ -166,6 +168,33 @@ const configSchema: ConfigSchema = {
 	],
 };
 
+// ─── Channel Provider ─────────────────────────────────────────────────────────
+
+const feishuChannelProvider: ChannelProvider = {
+	id: "feishu",
+
+	registerCommand(_cmd: ChannelCommand): void {
+		// Commands registered externally — no-op for feishu (no slash command registry)
+	},
+	unregisterCommand(_name: string): void {},
+	getCommands(): ChannelCommand[] {
+		return [];
+	},
+	addMessageParser(_parser: ChannelMessageParser): void {},
+	removeMessageParser(_id: string): void {},
+	getMessageParsers(): ChannelMessageParser[] {
+		return [];
+	},
+
+	async send(channel: string, content: string): Promise<void> {
+		await sendResponse(channel, content);
+	},
+
+	getBotUsername(): string {
+		return config.botName ?? agentIdentity.name ?? "WOPR";
+	},
+};
+
 // ─── Identity ─────────────────────────────────────────────────────────────────
 
 async function refreshIdentity(): Promise<void> {
@@ -182,7 +211,6 @@ async function refreshIdentity(): Promise<void> {
 
 export function resolveDomain(cfg: FeishuConfig): number {
 	if (cfg.domain === "lark") return lark.Domain.Lark;
-	// "feishu" or anything else defaults to Feishu domain
 	return lark.Domain.Feishu;
 }
 
@@ -245,14 +273,11 @@ export function extractTextFromContent(
 // ─── Mention Stripping ────────────────────────────────────────────────────────
 
 export function stripBotMention(text: string): string {
-	// Remove @_user_N placeholders (Feishu at-mention placeholders)
 	let result = text.replace(/@_user_\d+/g, "");
-	// Strip bot name if configured
 	if (config.botName) {
 		const escaped = config.botName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		result = result.replace(new RegExp(`@?${escaped}`, "gi"), "");
 	}
-	// Collapse multiple spaces and trim
 	return result.replace(/\s{2,}/g, " ").trim();
 }
 
@@ -272,17 +297,15 @@ export function shouldRespond(
 	if (chatType === "p2p") {
 		return (config.dmPolicy ?? "open") === "open";
 	}
-	// group chat
 	const policy = config.groupPolicy ?? "mention";
 	if (policy === "disabled") return false;
 	if (policy === "all") return true;
-	// "mention" — check if bot is mentioned
+	// "mention" — check if bot is mentioned by name
 	if (config.botName) {
 		return mentions.some(
 			(m) => m.name?.toLowerCase() === config.botName?.toLowerCase(),
 		);
 	}
-	// If no botName configured, respond to any mention
 	return mentions.length > 0;
 }
 
@@ -294,7 +317,6 @@ async function sendResponse(chatId: string, text: string): Promise<void> {
 	if (!client) return;
 	try {
 		const useCards = config.useRichCards !== false;
-		// Split into chunks if too long
 		const chunks: string[] = [];
 		let remaining = text;
 		while (remaining.length > MAX_TEXT_LENGTH) {
@@ -370,17 +392,12 @@ async function handleMessageEvent(data: unknown): Promise<void> {
 		}
 
 		const sessionKey = buildSessionKey(chat_id, chat_type);
-		const channelInfo: ChannelInfo = {
-			type: "feishu",
-			id: chat_id,
-		};
-
+		const channelInfo: ChannelInfo = { type: "feishu", id: chat_id };
 		const from = senderOpenId;
-		const logOptions = { from, channel: channelInfo };
-		ctx.logMessage(sessionKey, text, logOptions);
 
-		const prefixedMessage = text;
-		const response = await ctx.inject(sessionKey, prefixedMessage, {
+		ctx.logMessage(sessionKey, text, { from, channel: channelInfo });
+
+		const response = await ctx.inject(sessionKey, text, {
 			from,
 			channel: channelInfo,
 		});
@@ -395,7 +412,6 @@ async function handleMessageEvent(data: unknown): Promise<void> {
 
 async function handleCardAction(data: unknown): Promise<undefined> {
 	logger.info("Feishu card action received", { data });
-	// Placeholder for future interactive card features
 	return undefined;
 }
 
@@ -406,8 +422,7 @@ async function startWebSocket(): Promise<void> {
 	const eventDispatcher = new lark.EventDispatcher({}).register({
 		// biome-ignore lint/suspicious/noExplicitAny: SDK type
 		"im.message.receive_v1": async (data: any) => {
-			// Fire and forget — must NOT await inside the handler
-			// WebSocket mode has a 3-second timeout
+			// Fire and forget — WebSocket mode has a 3-second timeout
 			handleMessageEvent(data).catch((err) => {
 				logger.error("Message handling failed:", { err });
 			});
@@ -427,7 +442,6 @@ async function startWebSocket(): Promise<void> {
 // ─── Webhook Mode ─────────────────────────────────────────────────────────────
 
 async function startWebhook(): Promise<void> {
-	const creds = resolveCredentials();
 	const eventDispatcher = new lark.EventDispatcher({
 		encryptKey: config.encryptKey ?? "",
 		verificationToken: config.verificationToken,
@@ -453,7 +467,6 @@ async function startWebhook(): Promise<void> {
 	const cardPath = config.cardWebhookPath ?? "/webhook/card";
 	const port = config.webhookPort ?? 3000;
 
-	// Create separate adapters for event and card paths
 	const eventAdapter = lark.adaptDefault(eventPath, eventDispatcher);
 	const cardAdapter = lark.adaptDefault(cardPath, cardHandler);
 
@@ -473,17 +486,46 @@ async function startWebhook(): Promise<void> {
 	server.listen(port, () => {
 		logger.info(`Feishu webhook server listening on port ${port}`);
 	});
-
-	// Create a Lark client for API calls (even in webhook mode we need it for sending)
-	const _ = creds; // credentials already captured above for client creation in init
 }
 
 // ─── Plugin Definition ────────────────────────────────────────────────────────
 
 const plugin: WOPRPlugin = {
-	name: "wopr-plugin-feishu",
+	name: "@wopr-network/wopr-plugin-feishu",
 	version: "1.0.0",
-	description: "Feishu/Lark Bot integration using official Lark SDK",
+	description: "Feishu/Lark channel plugin for WOPR using official Lark SDK",
+
+	manifest: {
+		name: "@wopr-network/wopr-plugin-feishu",
+		version: "1.0.0",
+		description: "Feishu/Lark channel plugin for WOPR using official Lark SDK",
+		capabilities: ["channel"],
+		requires: {
+			env: ["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
+			network: {
+				outbound: true,
+				hosts: ["open.feishu.cn", "open.larksuite.com"],
+			},
+		},
+		provides: {
+			capabilities: [
+				{
+					type: "channel",
+					id: "feishu",
+					displayName: "Feishu/Lark",
+					tier: "byok",
+				},
+			],
+		},
+		icon: "🪶",
+		category: "communication",
+		tags: ["feishu", "lark", "bytedance", "enterprise", "china", "bot"],
+		lifecycle: {
+			shutdownBehavior: "drain",
+			shutdownTimeoutMs: 30_000,
+		},
+		configSchema,
+	},
 
 	async init(context: WOPRPluginContext) {
 		ctx = context;
@@ -494,7 +536,11 @@ const plugin: WOPRPlugin = {
 
 		await refreshIdentity();
 
-		// Validate credentials — skip startup if missing
+		// Register the channel provider immediately — even without credentials
+		// so the platform knows this plugin provides the feishu channel type
+		ctx.registerChannelProvider(feishuChannelProvider);
+
+		// Validate credentials — skip bot startup if missing
 		let creds: { appId: string; appSecret: string };
 		try {
 			creds = resolveCredentials(config);
@@ -507,7 +553,6 @@ const plugin: WOPRPlugin = {
 		}
 
 		try {
-			// Create the Lark API client
 			client = new lark.Client({
 				appId: creds.appId,
 				appSecret: creds.appSecret,
@@ -530,6 +575,10 @@ const plugin: WOPRPlugin = {
 
 	async shutdown() {
 		isShuttingDown = true;
+
+		if (ctx) {
+			ctx.unregisterChannelProvider("feishu");
+		}
 
 		if (wsClient) {
 			try {
