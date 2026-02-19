@@ -45,5 +45,8 @@
     "lark",
     "bot",
     "bytedance"
-  ]
+  ],
+  "release": {
+    "extends": "@wopr-network/semantic-release-config"
+  }
 }
