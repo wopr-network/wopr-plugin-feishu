@@ -25,7 +25,9 @@
     "@biomejs/biome": "^2.3.15",
     "@types/node": "^25.0.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "semantic-release": "^24.0.0",
+    "@wopr-network/semantic-release-config": "^1.0.0"
   },
   "peerDependencies": {
     "wopr": ">=0.0.1"
@@ -33,6 +35,15 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["dist"],
-  "keywords": ["wopr", "plugin", "feishu", "lark", "bot", "bytedance"]
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "wopr",
+    "plugin",
+    "feishu",
+    "lark",
+    "bot",
+    "bytedance"
+  ]
 }
