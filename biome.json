@@ -9,7 +9,17 @@
 	},
 	"linter": {
 		"enabled": true,
-		"rules": { "recommended": true }
+		"rules": {
+			"suspicious": {
+				"noConsole": {
+					"level": "error",
+					"options": {
+						"allow": ["warn", "error", "info"]
+					}
+				}
+			},
+			"recommended": true
+		}
 	},
 	"formatter": {
 		"enabled": true,
