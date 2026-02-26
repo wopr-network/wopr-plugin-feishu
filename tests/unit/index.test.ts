@@ -286,6 +286,7 @@ describe("plugin lifecycle", () => {
 		const mockCtx = {
 			getConfig: vi.fn(() => ({})),
 			registerConfigSchema: vi.fn(),
+			unregisterConfigSchema: vi.fn(),
 			registerChannelProvider: vi.fn(),
 			unregisterChannelProvider: vi.fn(),
 			getAgentIdentity: vi.fn().mockResolvedValue({ name: "TestBot" }),
