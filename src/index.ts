@@ -80,6 +80,8 @@ const configSchema: ConfigSchema = {
 			label: "App ID",
 			placeholder: "cli_xxx",
 			required: true,
+			secret: true,
+			setupFlow: "paste",
 			description: "Feishu App ID from Developer Console",
 		},
 		{
@@ -88,6 +90,8 @@ const configSchema: ConfigSchema = {
 			label: "App Secret",
 			placeholder: "xxx",
 			required: true,
+			secret: true,
+			setupFlow: "paste",
 			description: "Feishu App Secret from Developer Console",
 		},
 		{
@@ -99,6 +103,7 @@ const configSchema: ConfigSchema = {
 				{ value: "lark", label: "Lark (International)" },
 			],
 			default: "feishu",
+			setupFlow: "interactive",
 			description: "feishu for China, lark for international",
 		},
 		{
@@ -110,18 +115,21 @@ const configSchema: ConfigSchema = {
 				{ value: "webhook", label: "Webhook (HTTP)" },
 			],
 			default: "websocket",
+			setupFlow: "interactive",
 			description: "WebSocket needs no public URL; Webhook requires one",
 		},
 		{
 			name: "encryptKey",
 			type: "password",
 			label: "Encrypt Key",
+			secret: true,
 			description: "Event encryption key (webhook mode only)",
 		},
 		{
 			name: "verificationToken",
 			type: "password",
 			label: "Verification Token",
+			secret: true,
 			description: "Event verification token (webhook mode only)",
 		},
 		{
@@ -211,7 +219,7 @@ async function refreshIdentity(): Promise<void> {
 	try {
 		const identity = await ctx.getAgentIdentity();
 		agentIdentity = { ...agentIdentity, ...identity };
-	} catch (err) {
+	} catch (err: unknown) {
 		logger.warn("Failed to refresh agent identity", { err });
 	}
 }
@@ -365,7 +373,7 @@ async function sendResponse(chatId: string, text: string): Promise<void> {
 				});
 			}
 		}
-	} catch (err) {
+	} catch (err: unknown) {
 		logger.error("Failed to send Feishu response", { chatId, err });
 	}
 }
@@ -412,7 +420,7 @@ async function handleMessageEvent(data: unknown): Promise<void> {
 		});
 
 		await sendResponse(chat_id, response);
-	} catch (err) {
+	} catch (err: unknown) {
 		logger.error("Failed to handle Feishu message event", { err });
 	}
 }
@@ -538,6 +546,7 @@ const plugin: WOPRPlugin = {
 
 	async init(context: WOPRPluginContext) {
 		ctx = context;
+		isShuttingDown = false;
 		config = context.getConfig<FeishuConfig>() ?? {};
 		logger = initLogger();
 
@@ -553,7 +562,7 @@ const plugin: WOPRPlugin = {
 		let creds: { appId: string; appSecret: string };
 		try {
 			creds = resolveCredentials(config);
-		} catch (err) {
+		} catch (err: unknown) {
 			logger.warn(
 				"Feishu plugin: missing credentials, bot will not start. Configure appId and appSecret.",
 				{ err },
@@ -577,7 +586,7 @@ const plugin: WOPRPlugin = {
 			}
 
 			logger.info(`Feishu bot started in ${mode} mode`);
-		} catch (err) {
+		} catch (err: unknown) {
 			logger.error("Failed to start Feishu bot", { err });
 		}
 	},
@@ -587,6 +596,7 @@ const plugin: WOPRPlugin = {
 
 		if (ctx) {
 			ctx.unregisterChannelProvider("feishu");
+			ctx.unregisterConfigSchema("wopr-plugin-feishu");
 		}
 
 		if (wsClient) {
