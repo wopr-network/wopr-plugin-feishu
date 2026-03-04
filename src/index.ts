@@ -36,7 +36,7 @@ let logger: winston.Logger;
 
 // ─── Pending callbacks for friend-request notifications ───────────────────────
 
-interface PendingCallbacks {
+export interface PendingCallbacks {
 	onAccept?: () => Promise<void>;
 	onDeny?: () => Promise<void>;
 	timestamp: number;
@@ -551,6 +551,7 @@ export async function handleCardAction(data: unknown): Promise<undefined> {
 		}
 
 		const entry = pendingCallbacks.get(key);
+		pendingCallbacks.delete(key);
 		if (!entry) {
 			logger?.info("Card action for expired/unknown request", { key });
 			return undefined;
@@ -562,8 +563,8 @@ export async function handleCardAction(data: unknown): Promise<undefined> {
 			} else if (action === "deny" && entry.onDeny) {
 				await entry.onDeny();
 			}
-		} finally {
-			pendingCallbacks.delete(key);
+		} catch (err: unknown) {
+			logger?.error("Card action callback failed", { key, action, err });
 		}
 
 		logger?.info("Card action processed", { key, action });
