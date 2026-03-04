@@ -258,10 +258,12 @@ const feishuChannelProvider: ChannelProvider = {
 		payload: ChannelNotificationPayload,
 		callbacks: ChannelNotificationCallbacks = {},
 	): Promise<void> {
+		if (!channelId)
+			throw new Error("sendNotification: owner user ID not configured");
 		if (payload.type !== "friend-request") return;
 		if (!client) return;
 
-		const requestKey = `req_${payload.from ?? "unknown"}_${Date.now()}`;
+		const requestKey = `req_${payload.from ?? "unknown"}_${crypto.randomUUID().slice(0, 8)}`;
 
 		storePendingCallbacks(requestKey, {
 			onAccept: callbacks.onAccept,
@@ -315,6 +317,7 @@ const feishuChannelProvider: ChannelProvider = {
 			});
 		} catch (err: unknown) {
 			logger.error("Failed to send notification card", { channelId, err });
+			pendingCallbacks.delete(requestKey);
 		}
 	},
 };
@@ -581,6 +584,10 @@ async function startWebSocket(): Promise<void> {
 			handleMessageEvent(data).catch((err) => {
 				logger.error("Message handling failed:", { err });
 			});
+		},
+		// biome-ignore lint/suspicious/noExplicitAny: SDK type
+		"card.action.trigger": async (data: any) => {
+			await handleCardAction(data);
 		},
 	});
 
