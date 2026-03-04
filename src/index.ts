@@ -5,6 +5,8 @@ import type {
 	AgentIdentity,
 	ChannelCommand,
 	ChannelMessageParser,
+	ChannelNotificationCallbacks,
+	ChannelNotificationPayload,
 	ChannelProvider,
 	ConfigSchema,
 	WOPRPlugin,
@@ -31,6 +33,46 @@ let wsClient: lark.WSClient | null = null;
 let httpServer: http.Server | null = null;
 let isShuttingDown = false;
 let logger: winston.Logger;
+
+// ─── Pending callbacks for friend-request notifications ───────────────────────
+
+interface PendingCallbacks {
+	onAccept?: () => Promise<void>;
+	onDeny?: () => Promise<void>;
+	timestamp: number;
+}
+
+const pendingCallbacks: Map<string, PendingCallbacks> = new Map();
+const NOTIFICATION_TTL_MS = 15 * 60 * 1000;
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+export function storePendingCallbacks(
+	key: string,
+	entry: PendingCallbacks,
+): void {
+	pendingCallbacks.set(key, entry);
+}
+
+export function getPendingCallbacks(key: string): PendingCallbacks | undefined {
+	return pendingCallbacks.get(key);
+}
+
+export function removePendingCallbacks(
+	key: string,
+): PendingCallbacks | undefined {
+	const entry = pendingCallbacks.get(key);
+	pendingCallbacks.delete(key);
+	return entry;
+}
+
+export function cleanupExpiredNotifications(): void {
+	const now = Date.now();
+	for (const [key, entry] of pendingCallbacks) {
+		if (now - entry.timestamp > NOTIFICATION_TTL_MS) {
+			pendingCallbacks.delete(key);
+		}
+	}
+}
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
@@ -209,6 +251,71 @@ const feishuChannelProvider: ChannelProvider = {
 
 	getBotUsername(): string {
 		return config.botName ?? agentIdentity.name ?? "WOPR";
+	},
+
+	async sendNotification(
+		channelId: string,
+		payload: ChannelNotificationPayload,
+		callbacks: ChannelNotificationCallbacks = {},
+	): Promise<void> {
+		if (payload.type !== "friend-request") return;
+		if (!client) return;
+
+		const requestKey = `req_${payload.from ?? "unknown"}_${Date.now()}`;
+
+		storePendingCallbacks(requestKey, {
+			onAccept: callbacks.onAccept,
+			onDeny: callbacks.onDeny,
+			timestamp: Date.now(),
+		});
+
+		const cardContent = {
+			config: { wide_screen_mode: true },
+			header: {
+				template: "blue",
+				title: { content: "Friend Request", tag: "plain_text" },
+			},
+			elements: [
+				{
+					tag: "markdown",
+					content: `**${payload.from ?? "Unknown"}** wants to be your friend!${payload.channelName ? `\nChannel: ${payload.channelName}` : ""}${payload.pubkey ? `\nPubkey: \`${String(payload.pubkey).slice(0, 16)}...\`` : ""}`,
+				},
+				{
+					tag: "action",
+					actions: [
+						{
+							tag: "button",
+							text: { tag: "plain_text", content: "Accept" },
+							type: "primary",
+							value: { key: requestKey, action: "accept" },
+						},
+						{
+							tag: "button",
+							text: { tag: "plain_text", content: "Deny" },
+							type: "danger",
+							value: { key: requestKey, action: "deny" },
+						},
+					],
+				},
+			],
+		};
+
+		try {
+			await client.im.message.create({
+				params: { receive_id_type: "chat_id" },
+				data: {
+					receive_id: channelId,
+					content: JSON.stringify(cardContent),
+					msg_type: "interactive",
+				},
+			});
+			logger.info("Sent friend request notification card", {
+				channelId,
+				from: payload.from,
+			});
+		} catch (err: unknown) {
+			logger.error("Failed to send notification card", { channelId, err });
+		}
 	},
 };
 
@@ -427,8 +534,39 @@ async function handleMessageEvent(data: unknown): Promise<void> {
 
 // ─── Card Action Handler ──────────────────────────────────────────────────────
 
-async function handleCardAction(data: unknown): Promise<undefined> {
-	logger.info("Feishu card action received", { data });
+export async function handleCardAction(data: unknown): Promise<undefined> {
+	try {
+		const event = data as {
+			action?: { tag?: string; value?: { key?: string; action?: string } };
+		};
+		const key = event?.action?.value?.key;
+		const action = event?.action?.value?.action;
+
+		if (!key || !action) {
+			logger?.info("Card action received with no matching key", { data });
+			return undefined;
+		}
+
+		const entry = pendingCallbacks.get(key);
+		if (!entry) {
+			logger?.info("Card action for expired/unknown request", { key });
+			return undefined;
+		}
+
+		try {
+			if (action === "accept" && entry.onAccept) {
+				await entry.onAccept();
+			} else if (action === "deny" && entry.onDeny) {
+				await entry.onDeny();
+			}
+		} finally {
+			pendingCallbacks.delete(key);
+		}
+
+		logger?.info("Card action processed", { key, action });
+	} catch (err: unknown) {
+		logger?.error("Failed to handle card action", { err });
+	}
 	return undefined;
 }
 
@@ -530,7 +668,6 @@ const plugin: WOPRPlugin = {
 					type: "channel",
 					id: "feishu",
 					displayName: "Feishu/Lark",
-					tier: "byok",
 				},
 			],
 		},
@@ -586,6 +723,8 @@ const plugin: WOPRPlugin = {
 			}
 
 			logger.info(`Feishu bot started in ${mode} mode`);
+
+			cleanupInterval = setInterval(cleanupExpiredNotifications, 5 * 60 * 1000);
 		} catch (err: unknown) {
 			logger.error("Failed to start Feishu bot", { err });
 		}
@@ -593,6 +732,12 @@ const plugin: WOPRPlugin = {
 
 	async shutdown() {
 		isShuttingDown = true;
+
+		if (cleanupInterval) {
+			clearInterval(cleanupInterval);
+			cleanupInterval = null;
+		}
+		pendingCallbacks.clear();
 
 		if (ctx) {
 			ctx.unregisterChannelProvider("feishu");
